@@ -54,6 +54,15 @@
     state: present
   notify: Restart kubelet
 
+- name: Allow Kubernetes workloads to use configured node swap
+  ansible.builtin.lineinfile:
+    path: /var/lib/kubelet/config.yaml
+    regexp: '^memorySwap:.*$'
+    line: |-
+      memorySwap:
+        swapBehavior: LimitedSwap
+  notify: Restart kubelet
+
 - name: Install Calico CNI Network Plugin
   ansible.builtin.command: kubectl apply -f {{ calico_manifest_url }}
   environment:

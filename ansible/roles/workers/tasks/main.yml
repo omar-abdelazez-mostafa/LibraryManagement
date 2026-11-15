@@ -23,3 +23,12 @@
     line: "failSwapOn: false"
     state: present
   notify: Restart kubelet
+
+- name: Allow Kubernetes workloads to use configured node swap
+  ansible.builtin.lineinfile:
+    path: /var/lib/kubelet/config.yaml
+    regexp: '^memorySwap:.*$'
+    line: |-
+      memorySwap:
+        swapBehavior: LimitedSwap
+  notify: Restart kubelet
