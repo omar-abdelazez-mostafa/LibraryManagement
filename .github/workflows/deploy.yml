@@ -141,10 +141,10 @@ jobs:
           owner="${GITHUB_REPOSITORY,,}"
           echo "IMAGE_PREFIX=ghcr.io/${owner}" >> "$GITHUB_ENV"
           echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
-          docker build --file backend/Dockerfile --tag "ghcr.io/${owner}-api:${GITHUB_SHA}" .
-          docker build --tag "ghcr.io/${owner}-web:${GITHUB_SHA}" frontend
-          docker push "ghcr.io/${owner}-api:${GITHUB_SHA}"
-          docker push "ghcr.io/${owner}-web:${GITHUB_SHA}"
+          docker build --file backend/Dockerfile --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" --tag "ghcr.io/${owner}:${GITHUB_SHA}-api" .
+          docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" --tag "ghcr.io/${owner}:${GITHUB_SHA}-web" frontend
+          docker push "ghcr.io/${owner}:${GITHUB_SHA}-api"
+          docker push "ghcr.io/${owner}:${GITHUB_SHA}-web"
 
       - name: Prepare encrypted Terraform state bucket
         run: |
@@ -192,8 +192,8 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           ANSIBLE_HOST_KEY_CHECKING: 'False'
-          BACKEND_IMAGE: ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}
-          FRONTEND_IMAGE: ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}
+          BACKEND_IMAGE: ${{ env.IMAGE_PREFIX }}:${{ github.sha }}-api
+          FRONTEND_IMAGE: ${{ env.IMAGE_PREFIX }}:${{ github.sha }}-web
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
