@@ -101,7 +101,8 @@
       - docker-buildx-plugin
       - docker-compose-plugin
     state: present
-    update_cache: yes
+    cache_valid_time: 86400
+    lock_timeout: 300
 
 - name: Add ubuntu user to docker group
   ansible.builtin.user:
@@ -169,7 +170,8 @@
       - kubeadm
       - kubectl
     state: present
-    update_cache: yes
+    cache_valid_time: 86400
+    lock_timeout: 300
 
 - name: Hold Kubernetes packages at current version
   ansible.builtin.dpkg_selections:
