@@ -291,6 +291,11 @@ workers
 
 [all:vars]
 ansible_ssh_private_key_file=${var.pem_file_path}
+
+[master:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -q -i ${var.pem_file_path} -o StrictHostKeyChecking=no ubuntu@${aws_instance.bastion.public_ip}"'
+
+[workers:vars]
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -q -i ${var.pem_file_path} -o StrictHostKeyChecking=no ubuntu@${aws_instance.bastion.public_ip}"'
 EOT
 }
