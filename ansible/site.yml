@@ -1,0 +1,67 @@
+---
+- name: Configure Bastion Host
+  hosts: bastion
+  become: yes
+  tasks:
+    - name: Wait for Bastion SSH to be ready
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        delay: 5
+
+    - name: Install essential tools on Bastion
+      ansible.builtin.apt:
+        name:
+          - curl
+          - jq
+          - net-tools
+        state: present
+        update_cache: yes
+
+- name: Configure All Kubernetes Nodes
+  hosts: k8s_cluster
+  become: yes
+  roles:
+    - common
+
+- name: Initialize Kubernetes Master Node
+  hosts: master
+  become: yes
+  roles:
+    - master
+
+- name: Join Worker Nodes to Kubernetes Cluster
+  hosts: workers
+  become: yes
+  roles:
+    - workers
+
+- name: Verify Kubernetes Cluster Nodes
+  hosts: master
+  become: yes
+  tasks:
+    - name: Wait for every Kubernetes node to become Ready
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=10m
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Check Kubernetes nodes status
+      ansible.builtin.command: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodes_output
+
+    - name: Mark worker 1 as the persistent library database node
+      ansible.builtin.shell: |
+        set -euo pipefail
+        node_name=$(kubectl get nodes -o wide --no-headers | awk '$6 == "{{ hostvars.worker1.ansible_host }}" {print $1}')
+        test -n "$node_name"
+        kubectl label node "$node_name" library-storage=enabled --overwrite
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+
+    - name: Display Kubernetes Cluster Nodes
+      ansible.builtin.debug:
+        msg: "{{ nodes_output.stdout_lines }}"

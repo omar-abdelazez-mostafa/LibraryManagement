@@ -1,0 +1,5 @@
+---
+k8s_version: "1.35"
+pod_network_cidr: "192.168.0.0/16"
+master_ip: "10.0.1.10"
+calico_manifest_url: "https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/calico.yaml"

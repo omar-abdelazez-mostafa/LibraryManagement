@@ -1,0 +1,189 @@
+name: Deploy Open Shelf
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Infrastructure action
+        required: true
+        default: apply
+        type: choice
+        options: [apply, destroy]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: library-management-deployment
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-3
+  TF_IN_AUTOMATION: true
+
+jobs:
+  deploy:
+    name: Build, provision, and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check AWS and application secrets
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          missing=()
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SSH_PRIVATE_KEY DATABASE_PASSWORD JWT_SECRET; do
+            if [[ -z "${!name}" ]]; then missing+=("$name"); fi
+          done
+          if ((${#missing[@]})); then
+            printf 'Configure these repository Actions secrets before deploying: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Set up Python and Ansible
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible collections
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+          ansible-galaxy collection install community.general ansible.posix
+
+      - name: Configure SSH private key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/depi-task.pem"
+          chmod 600 "$RUNNER_TEMP/depi-task.pem"
+
+      - name: Build and publish API and web images
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          owner="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_PREFIX=ghcr.io/${owner}" >> "$GITHUB_ENV"
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          docker build --tag "ghcr.io/${owner}-api:${GITHUB_SHA}" backend
+          docker build --tag "ghcr.io/${owner}-web:${GITHUB_SHA}" frontend
+          docker push "ghcr.io/${owner}-api:${GITHUB_SHA}"
+          docker push "ghcr.io/${owner}-web:${GITHUB_SHA}"
+
+      - name: Prepare encrypted Terraform state bucket
+        run: |
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          state_bucket="library-management-terraform-state-${account_id}-${AWS_REGION}"
+          if ! aws s3api head-bucket --bucket "$state_bucket" 2>/dev/null; then
+            aws s3api create-bucket --bucket "$state_bucket" --region "$AWS_REGION" \
+              --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+          fi
+          aws s3api put-public-access-block --bucket "$state_bucket" \
+            --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          aws s3api put-bucket-encryption --bucket "$state_bucket" \
+            --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+          aws s3api put-bucket-versioning --bucket "$state_bucket" --versioning-configuration Status=Enabled
+          echo "STATE_BUCKET=$state_bucket" >> "$GITHUB_ENV"
+
+      - name: Initialize Terraform with shared state
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=library-management/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" -backend-config="encrypt=true"
+
+      - name: Import any existing library project infrastructure
+        env:
+          TF_VAR_pem_file_path: ${{ runner.temp }}/depi-task.pem
+        run: bash scripts/import-existing.sh
+
+      - name: Validate Terraform and Ansible playbooks
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+          cd ansible
+          ansible-playbook --syntax-check -i localhost, site.yml
+          ansible-playbook --syntax-check -i localhost, deploy-library.yml
+
+      - name: Apply AWS infrastructure
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        env:
+          TF_VAR_pem_file_path: ${{ runner.temp }}/depi-task.pem
+        run: terraform apply -input=false -auto-approve
+
+      - name: Configure Kubernetes with Ansible
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
+        run: cd ansible && ansible-playbook -i inventory.ini site.yml
+
+      - name: Deploy the library application
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
+          BACKEND_IMAGE: ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}
+          FRONTEND_IMAGE: ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cd ansible && ansible-playbook -i inventory.ini deploy-library.yml
+
+      - name: Show deployed website URL
+        if: (github.event_name == 'push' || inputs.action == 'apply') && success()
+        run: echo "Open Shelf is available at $(terraform output -raw library_website_url)"
+
+      - name: Publish generated SSH connection config
+        if: (github.event_name == 'push' || inputs.action == 'apply') && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: library-management-ssh-config
+          path: ansible/ssh_config.generated
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Destroy AWS infrastructure
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+        env:
+          TF_VAR_pem_file_path: ${{ runner.temp }}/depi-task.pem
+        run: terraform destroy -input=false -auto-approve
+
+      - name: Collect Kubernetes node diagnostics after failure
+        if: failure() && (github.event_name == 'push' || inputs.action == 'apply')
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
+        run: |
+          if [[ -f ansible/inventory.ini ]]; then
+            ansible k8s_cluster -i ansible/inventory.ini -m shell \
+              -a 'systemctl status kubelet containerd --no-pager -l; journalctl -u kubelet -n 60 --no-pager' || true
+          fi

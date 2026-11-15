@@ -1,0 +1,113 @@
+---
+- name: Deploy Open Shelf to Kubernetes
+  hosts: master
+  become: false
+  vars:
+    manifests_source: "{{ playbook_dir }}/../k8s"
+    manifests_destination: /tmp/open-shelf-k8s
+    backend_image: "{{ lookup('env', 'BACKEND_IMAGE') }}"
+    frontend_image: "{{ lookup('env', 'FRONTEND_IMAGE') }}"
+  tasks:
+    - name: Ensure image references were supplied
+      ansible.builtin.assert:
+        that:
+          - backend_image | length > 0
+          - frontend_image | length > 0
+        fail_msg: BACKEND_IMAGE and FRONTEND_IMAGE must be set by the deployment workflow.
+
+    - name: Copy Kubernetes manifests to the control plane
+      ansible.builtin.copy:
+        src: "{{ manifests_source }}/"
+        dest: "{{ manifests_destination }}/"
+        mode: preserve
+
+    - name: Create namespace
+      ansible.builtin.command: kubectl apply -f {{ manifests_destination }}/namespace.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Apply database credentials without printing the secret
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl create secret generic library-secrets -n library \
+          --from-literal=database-password="$DATABASE_PASSWORD" \
+          --from-literal=jwt-secret="$JWT_SECRET" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+        DATABASE_PASSWORD: "{{ lookup('env', 'DATABASE_PASSWORD') }}"
+        JWT_SECRET: "{{ lookup('env', 'JWT_SECRET') }}"
+      no_log: true
+
+    - name: Configure private GHCR image pulls without printing the token
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl create secret docker-registry ghcr-pull -n library \
+          --docker-server=ghcr.io \
+          --docker-username="$GHCR_USERNAME" \
+          --docker-password="$GHCR_READ_TOKEN" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        kubectl patch serviceaccount default -n library \
+          --type=merge -p '{"imagePullSecrets":[{"name":"ghcr-pull"}]}'
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+        GHCR_USERNAME: "{{ lookup('env', 'GHCR_USERNAME') }}"
+        GHCR_READ_TOKEN: "{{ lookup('env', 'GHCR_READ_TOKEN') }}"
+      no_log: true
+
+    - name: Apply persistent PostgreSQL database
+      ansible.builtin.command: kubectl apply -f {{ manifests_destination }}/database.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Apply API deployment and service
+      ansible.builtin.template:
+        src: "{{ manifests_source }}/backend.yaml"
+        dest: "{{ manifests_destination }}/backend.yaml"
+        mode: '0644'
+      register: backend_manifest
+
+    - name: Apply API resources
+      ansible.builtin.command: kubectl apply -f {{ manifests_destination }}/backend.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Render web deployment and service
+      ansible.builtin.template:
+        src: "{{ manifests_source }}/frontend.yaml"
+        dest: "{{ manifests_destination }}/frontend.yaml"
+        mode: '0644'
+
+    - name: Apply web resources
+      ansible.builtin.command: kubectl apply -f {{ manifests_destination }}/frontend.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Wait for PostgreSQL to become ready
+      ansible.builtin.command: kubectl rollout status deployment/postgres -n library --timeout=5m
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Wait for the library API to become ready
+      ansible.builtin.command: kubectl rollout status deployment/library-api -n library --timeout=5m
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Wait for the website to become ready
+      ansible.builtin.command: kubectl rollout status deployment/library-web -n library --timeout=5m
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+
+    - name: Show library application status
+      ansible.builtin.command: kubectl get pods,services -n library -o wide
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: library_status
+
+    - name: Print library application status
+      ansible.builtin.debug:
+        msg: "{{ library_status.stdout_lines }}"

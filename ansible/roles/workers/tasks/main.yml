@@ -1,0 +1,25 @@
+---
+- name: Check if node is already joined
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Join worker node to cluster
+  ansible.builtin.command: "{{ hostvars['master_host']['join_command'] }}"
+  when: not kubelet_conf.stat.exists
+
+- name: Prepare the library database data directory on worker 1
+  ansible.builtin.file:
+    path: /data/library-postgres
+    state: directory
+    owner: '70'
+    group: '70'
+    mode: '0700'
+  when: inventory_hostname == 'worker1'
+
+- name: Ensure failSwapOn is set to false in kubelet config
+  ansible.builtin.lineinfile:
+    path: /var/lib/kubelet/config.yaml
+    line: "failSwapOn: false"
+    state: present
+  notify: Restart kubelet

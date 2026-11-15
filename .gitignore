@@ -1,0 +1,13 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+ansible/inventory.ini
+ansible/ssh_config.generated
+*.pem
+*.key
+*.tfvars
+*.tfvars.json
+terraform.rc

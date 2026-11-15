@@ -1,0 +1,68 @@
+---
+- name: Check if Kubernetes control-plane is already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadmin_conf
+
+- name: Initialize Kubernetes Control Plane
+  ansible.builtin.command: >
+    kubeadm init
+    --pod-network-cidr={{ pod_network_cidr }}
+    --apiserver-advertise-address={{ master_ip }}
+    --ignore-preflight-errors=Swap
+  when: not kubeadmin_conf.stat.exists
+  register: kubeadm_init_output
+
+- name: Create .kube directory for ubuntu user
+  ansible.builtin.file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy admin.conf to ubuntu user kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: yes
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+
+- name: Create .kube directory for root user
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy admin.conf to root user kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Ensure failSwapOn is set to false in kubelet config
+  ansible.builtin.lineinfile:
+    path: /var/lib/kubelet/config.yaml
+    line: "failSwapOn: false"
+    state: present
+  notify: Restart kubelet
+
+- name: Install Calico CNI Network Plugin
+  ansible.builtin.command: kubectl apply -f {{ calico_manifest_url }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Generate join command for worker nodes
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: kubeadm_join_command
+
+- name: Store join command in dummy host fact
+  ansible.builtin.set_fact:
+    join_command: "{{ kubeadm_join_command.stdout }} --ignore-preflight-errors=Swap"
