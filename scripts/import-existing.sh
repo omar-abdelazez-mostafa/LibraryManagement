@@ -3,7 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../infra"
 
 terraform_state_has() {
-  terraform state list | grep -Fxq "$1"
+  # Read the complete command output. grep -q exits as soon as it finds a
+  # match, which can close Terraform's stdout pipe and make the Terraform
+  # wrapper fail with EPIPE even though the address exists in state.
+  terraform state list | awk -v address="$1" '$0 == address { found = 1 } END { exit !found }'
 }
 
 import_if_needed() {
