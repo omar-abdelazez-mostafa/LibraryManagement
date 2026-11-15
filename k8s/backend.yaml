@@ -19,7 +19,8 @@ spec:
             - { name: http, containerPort: 3000 }
           env:
             - { name: PORT, value: "3000" }
-            - { name: ADMIN_EMAIL, value: admin@openshelf.local }
+            - { name: ADMIN_EMAIL, value: omar@openshelf.local }
+            - { name: ADMIN_PASSWORD, valueFrom: { secretKeyRef: { name: library-secrets, key: admin-password } } }
             - { name: PGHOST, value: postgres.library.svc.cluster.local }
             - { name: PGDATABASE, value: openshelf }
             - { name: PGUSER, value: openshelf }

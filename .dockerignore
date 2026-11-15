@@ -3,3 +3,4 @@ node_modules
 npm-debug.log
 terraform.tfstate*
 *.pem
+**/.terraform\n*.tfstate\nansible/inventory.ini\nansible/ssh_config.generated

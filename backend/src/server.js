@@ -3,12 +3,16 @@ import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pg from 'pg';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const { Pool } = pg;
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret) throw new Error('JWT_SECRET must be set');
+const databaseFiles = process.env.DATABASE_FILES_DIR || resolve(dirname(fileURLToPath(import.meta.url)), '../../database');
 const pool = new Pool(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {
   host: process.env.PGHOST || 'postgres',
   port: Number(process.env.PGPORT || 5432),
@@ -20,30 +24,13 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '32kb' }));
 
 async function initialize() {
-  await pool.query(`CREATE TABLE IF NOT EXISTS users (
-    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-  )`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS books (
-    id BIGSERIAL PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, category TEXT NOT NULL,
-    cover_image TEXT NOT NULL DEFAULT '', price NUMERIC(8,2) NOT NULL CHECK (price >= 0),
-    total_quantity INTEGER NOT NULL CHECK (total_quantity >= 0), available_quantity INTEGER NOT NULL CHECK (available_quantity >= 0 AND available_quantity <= total_quantity)
-  )`);
-  await pool.query('ALTER TABLE books ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true');
-  await pool.query(`CREATE TABLE IF NOT EXISTS transactions (
-    id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id), book_id BIGINT NOT NULL REFERENCES books(id),
-    type TEXT NOT NULL CHECK (type IN ('buy','borrow')), status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT now(), returned_at TIMESTAMPTZ
-  )`);
+  await pool.query(await readFile(resolve(databaseFiles, 'schema.sql'), 'utf8'));
   const { rows } = await pool.query('SELECT count(*)::int AS count FROM books');
-  if (!rows[0].count) await pool.query(`INSERT INTO books (title,author,category,cover_image,price,total_quantity,available_quantity) VALUES
-    ('The Midnight Library','Matt Haig','Fiction','https://covers.openlibrary.org/b/isbn/9780525559474-L.jpg',16.99,8,8),
-    ('Atomic Habits','James Clear','Personal Growth','https://covers.openlibrary.org/b/isbn/9780735211292-L.jpg',18.50,10,10),
-    ('The Creative Act','Rick Rubin','Creativity','https://covers.openlibrary.org/b/isbn/9780593652886-L.jpg',22.00,6,6),
-    ('Before the Coffee Gets Cold','Toshikazu Kawaguchi','Fiction','https://covers.openlibrary.org/b/isbn/9781335430991-L.jpg',14.25,7,7),
-    ('A Brief History of Time','Stephen Hawking','Science','https://covers.openlibrary.org/b/isbn/9780553380163-L.jpg',17.75,5,5),
-    ('The Design of Everyday Things','Don Norman','Design','https://covers.openlibrary.org/b/isbn/9780465050659-L.jpg',19.00,4,4),
-    ('Ikigai','Héctor García & Francesc Miralles','Wellness','https://covers.openlibrary.org/b/isbn/9780143130727-L.jpg',13.50,9,9),
-    ('Educated','Tara Westover','Memoir','https://covers.openlibrary.org/b/isbn/9780399590504-L.jpg',15.99,6,6)`);
+  if (!rows[0].count) await pool.query(await readFile(resolve(databaseFiles, 'seed.sql'), 'utf8'));
+  const email = (process.env.ADMIN_EMAIL || 'omar@openshelf.local').trim().toLowerCase();
+  const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || '1234', 12);
+  await pool.query(`INSERT INTO users(name,email,password_hash,role) VALUES('Omar',$1,$2,'admin')
+    ON CONFLICT(email) DO UPDATE SET name='Omar',password_hash=EXCLUDED.password_hash,role='admin'`, [email, passwordHash]);
 }
 
 function tokenFor(user) { return jwt.sign({ id: Number(user.id), role: user.role }, jwtSecret, { expiresIn: '12h' }); }
@@ -69,7 +56,8 @@ app.post('/api/auth/register', asyncRoute(async (req, res) => {
   catch (error) { if (error.code === '23505') return res.status(409).json({ error: 'An account with this email already exists.' }); throw error; }
 }));
 app.post('/api/auth/login', asyncRoute(async (req, res) => {
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const identity = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const email = identity === 'omar' ? 'omar@openshelf.local' : identity;
   const password = req.body?.password;
   const { rows } = await pool.query('SELECT id,name,email,password_hash,role FROM users WHERE email=$1', [email]);
   if (!rows[0] || typeof password !== 'string' || !(await bcrypt.compare(password, rows[0].password_hash))) return res.status(401).json({ error: 'Email or password is incorrect.' });

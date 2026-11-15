@@ -51,6 +51,7 @@ jobs:
 
       - name: Validate Terraform without AWS credentials
         run: |
+          cd infra
           terraform fmt -check -recursive
           terraform init -backend=false -input=false
           terraform validate
@@ -63,9 +64,14 @@ jobs:
           ansible-playbook --syntax-check -i localhost, site.yml
           ansible-playbook --syntax-check -i localhost, deploy-library.yml
 
+      - name: Check JavaScript syntax
+        run: |
+          node --check backend/src/server.js
+          node --check frontend/app.js
+
       - name: Build application images
         run: |
-          docker build --tag open-shelf-api:ci backend
+          docker build --file backend/Dockerfile --tag open-shelf-api:ci .
           docker build --tag open-shelf-web:ci frontend
 
   deploy:
@@ -84,10 +90,11 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           missing=()
-          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SSH_PRIVATE_KEY DATABASE_PASSWORD JWT_SECRET; do
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SSH_PRIVATE_KEY DATABASE_PASSWORD ADMIN_PASSWORD JWT_SECRET; do
             if [[ -z "${!name}" ]]; then missing+=("$name"); fi
           done
           if ((${#missing[@]})); then
@@ -134,7 +141,7 @@ jobs:
           owner="${GITHUB_REPOSITORY,,}"
           echo "IMAGE_PREFIX=ghcr.io/${owner}" >> "$GITHUB_ENV"
           echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
-          docker build --tag "ghcr.io/${owner}-api:${GITHUB_SHA}" backend
+          docker build --file backend/Dockerfile --tag "ghcr.io/${owner}-api:${GITHUB_SHA}" .
           docker build --tag "ghcr.io/${owner}-web:${GITHUB_SHA}" frontend
           docker push "ghcr.io/${owner}-api:${GITHUB_SHA}"
           docker push "ghcr.io/${owner}-web:${GITHUB_SHA}"
@@ -156,6 +163,7 @@ jobs:
 
       - name: Initialize Terraform with shared state
         run: |
+          cd infra
           terraform init -input=false -reconfigure \
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="key=library-management/terraform.tfstate" \
@@ -170,7 +178,7 @@ jobs:
         if: github.event_name == 'push' || inputs.action == 'apply'
         env:
           TF_VAR_pem_file_path: ${{ runner.temp }}/depi-task.pem
-        run: terraform apply -input=false -auto-approve
+        run: cd infra && terraform apply -input=false -auto-approve
 
       - name: Configure Kubernetes with Ansible
         if: github.event_name == 'push' || inputs.action == 'apply'
@@ -187,6 +195,7 @@ jobs:
           BACKEND_IMAGE: ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}
           FRONTEND_IMAGE: ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -194,7 +203,7 @@ jobs:
 
       - name: Show deployed website URL
         if: (github.event_name == 'push' || inputs.action == 'apply') && success()
-        run: echo "Open Shelf is available at $(terraform output -raw library_website_url)"
+        run: echo "Open Shelf is available at $(cd infra && terraform output -raw library_website_url)"
 
       - name: Publish generated SSH connection config
         if: (github.event_name == 'push' || inputs.action == 'apply') && success()
@@ -209,7 +218,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
         env:
           TF_VAR_pem_file_path: ${{ runner.temp }}/depi-task.pem
-        run: terraform destroy -input=false -auto-approve
+        run: cd infra && terraform destroy -input=false -auto-approve
 
       - name: Collect Kubernetes node diagnostics after failure
         if: failure() && (github.event_name == 'push' || inputs.action == 'apply')

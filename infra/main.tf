@@ -272,7 +272,7 @@ resource "aws_instance" "worker2" {
 # Dynamic Ansible Inventory Generation
 ########################################
 resource "local_file" "ansible_inventory" {
-  filename        = "${path.module}/ansible/inventory.ini"
+  filename        = "${path.module}/../ansible/inventory.ini"
   file_permission = "0600"
   content         = <<-EOT
 [bastion]
@@ -296,7 +296,7 @@ EOT
 }
 
 resource "local_file" "ssh_config" {
-  filename        = "${path.module}/ansible/ssh_config.generated"
+  filename        = "${path.module}/../ansible/ssh_config.generated"
   file_permission = "0600"
   content         = <<-EOT
 Host bastion

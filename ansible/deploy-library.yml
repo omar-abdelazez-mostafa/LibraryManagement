@@ -31,6 +31,7 @@
         set -euo pipefail
         kubectl create secret generic library-secrets -n library \
           --from-literal=database-password="$DATABASE_PASSWORD" \
+          --from-literal=admin-password="$ADMIN_PASSWORD" \
           --from-literal=jwt-secret="$JWT_SECRET" \
           --dry-run=client -o yaml | kubectl apply -f -
       args:
@@ -38,6 +39,7 @@
       environment:
         KUBECONFIG: /home/ubuntu/.kube/config
         DATABASE_PASSWORD: "{{ lookup('env', 'DATABASE_PASSWORD') }}"
+        ADMIN_PASSWORD: "{{ lookup('env', 'ADMIN_PASSWORD') }}"
         JWT_SECRET: "{{ lookup('env', 'JWT_SECRET') }}"
       no_log: true
 

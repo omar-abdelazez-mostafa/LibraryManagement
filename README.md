@@ -1,6 +1,6 @@
 # Open Shelf Library
 
-A small library management website built as a three layer application: a responsive browser UI, a Node.js API, and PostgreSQL. Members can register, log in, browse and search the catalogue, add books to a cart, record purchases, borrow books, and return them. Members have separate Borrowed, Bought, and Cart pages. The cart is saved in that browser; checkout records each completed purchase and stock change in PostgreSQL. Administrators can add, edit, and remove books from the inventory manager. Inventory changes and transaction history are stored in PostgreSQL.
+A small library management website built as a three layer application: a responsive browser UI, a Node.js API, and PostgreSQL. Members can register, log in, browse and search the catalogue, add books to a cart, record purchases, borrow books, and return them. Members have separate Borrowed, Bought, Cart, and Checkout pages. The cart is saved in that browser; checkout records each completed purchase and stock change in PostgreSQL. Administrators can add, edit, and remove books from the inventory manager. Inventory changes and transaction history are stored in PostgreSQL.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ A small library management website built as a three layer application: a respons
 | --- | --- |
 | Frontend | HTML, CSS, and JavaScript served by Nginx |
 | Backend | Express API for authentication, catalogue, inventory, and transactions |
-| Database | PostgreSQL with persistent Kubernetes volume |
+| Database | PostgreSQL; schema and sample seed data live in `database/` and data uses a persistent Kubernetes volume |
 | Orchestration | kubeadm cluster with Kubernetes Deployments, Services, and PersistentVolume |
 | Infrastructure | Terraform on AWS Paris (`eu-west-3`) |
 | Configuration and CI/CD | Ansible and GitHub Actions |
@@ -21,7 +21,7 @@ Opening `frontend/index.html` directly shows a browser preview with a sample cat
 
 The repository workflow is the deployment entry point. Push to `main` to build and publish the frontend/API images, create the AWS resources, configure kubeadm with Ansible, and apply the Kubernetes manifests. Use **Actions → Deploy Open Shelf → Run workflow** with `destroy` to remove AWS infrastructure when finished.
 
-Add these GitHub Actions repository secrets before the first push:
+The repository needs these Actions secrets before deployment:
 
 | Secret | Purpose |
 | --- | --- |
@@ -29,16 +29,20 @@ Add these GitHub Actions repository secrets before the first push:
 | `AWS_SECRET_ACCESS_KEY` | Matching AWS secret |
 | `SSH_PRIVATE_KEY` | Private key for the existing EC2 key pair named `depi-task` in `eu-west-3` |
 | `DATABASE_PASSWORD` | Strong password for the PostgreSQL application user |
+| `ADMIN_PASSWORD` | Fixed demo administrator password; currently `1234` |
 | `JWT_SECRET` | Long random secret used to sign login tokens |
+
+`SSH_PRIVATE_KEY`, `DATABASE_PASSWORD`, `ADMIN_PASSWORD`, and `JWT_SECRET` are already configured in this repository. Add valid `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` values before the deployment job can provision AWS.
 The workflow uses its built-in `GITHUB_TOKEN` to publish images to GitHub Container Registry and configure cluster image pulls. Never commit these values or a private key. Terraform state is kept in a separate private, encrypted, versioned S3 bucket named for the AWS account and region.
 
 Terraform uses four `t3.micro` Ubuntu nodes and small root volumes in Paris, following the companion kubeadm project. Confirm your AWS account's current free tier, instance quota, and storage allowance before deployment; AWS charges can apply. The app's database uses a 2 GiB local Kubernetes volume on worker 1, so its data survives pod restarts but not deletion of that EC2 node or Terraform infrastructure.
 
 After a successful workflow, open the `library_website_url` Terraform output (or the worker 1 public IP on port `30080`). Download the `library-management-ssh-config` artifact from the same Actions run if you want the generated SSH configuration.
 
-The first administrator account is registered with `admin@openshelf.local`. The backend grants the administrator role only to that configured email. The protected inventory API supports:
+The fixed administrator can sign in with username `omar` and password `1234` (or email `omar@openshelf.local`). The API validates credentials and rejects unknown usernames or incorrect passwords. New members sign up with name, email, and a password of at least eight characters. The administrator can add, edit, and remove catalogue items from **My shelf → Manage inventory**. This fixed demo password is intentionally easy to remember; change the `ADMIN_PASSWORD` Actions secret before exposing the site publicly. The protected inventory API supports:
 
 - `POST /api/books` with `title`, `author`, `category`, optional `cover_image`, `price`, and `total_quantity`.
+- `PATCH /api/books/:id` to edit the book; `DELETE /api/books/:id` removes it from the active catalogue.
 - `PATCH /api/books/:id/inventory` with `total_quantity`.
 
 Every inventory change requires the administrator's Bearer token. The inventory page offers create, edit, and remove controls. Catalogue removal is a soft delete so past purchases and loans remain in history.
@@ -48,7 +52,7 @@ Every inventory change requires the administrator's Bearer token. The inventory 
 | Method and route | Purpose |
 | --- | --- |
 | `POST /api/auth/register` | Create an account with name, email, and password |
-| `POST /api/auth/login` | Log in with email and password |
+| `POST /api/auth/login` | Log in with the administrator username or member email and password |
 | `POST /api/auth/logout` | Logout acknowledgement; the browser clears its token |
 | `GET /api/books` | Browse the catalogue and stock |
 | `POST /api/transactions/buy` | Record a purchase and decrement stock |
@@ -63,10 +67,11 @@ Passwords are hashed with bcrypt. Purchase and borrowing operations use database
 ## Repository structure
 
 ```text
-frontend/                 Responsive catalogue and Nginx configuration
+frontend/                 Catalogue, cart, checkout, account pages, and Nginx
 backend/src/server.js     Authentication, inventory, and transaction API
+database/                 PostgreSQL schema and eight sample books
 k8s/                      Namespace, app services, and persistent PostgreSQL
-main.tf                   Paris VPC, security groups, bastion, and kubeadm nodes
+infra/                    Paris VPC, security groups, bastion, and kubeadm Terraform
 ansible/site.yml          Configure kubeadm and label the storage worker
 ansible/deploy-library.yml Deploy secrets and the application to Kubernetes
 .github/workflows/        Build, provision, configure, and deploy pipeline

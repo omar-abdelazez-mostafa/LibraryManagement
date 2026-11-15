@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+cd "$(dirname "$0")/../infra"
 
 terraform_state_has() {
   terraform state list | grep -Fxq "$1"
