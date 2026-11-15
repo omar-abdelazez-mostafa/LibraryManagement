@@ -9,7 +9,7 @@
     kubeadm init
     --pod-network-cidr={{ pod_network_cidr }}
     --apiserver-advertise-address={{ master_ip }}
-    --ignore-preflight-errors=Swap
+    --ignore-preflight-errors=Swap,Mem
   when: not kubeadmin_conf.stat.exists
   register: kubeadm_init_output
 
@@ -65,4 +65,4 @@
 
 - name: Store join command in dummy host fact
   ansible.builtin.set_fact:
-    join_command: "{{ kubeadm_join_command.stdout }} --ignore-preflight-errors=Swap"
+    join_command: "{{ kubeadm_join_command.stdout }} --ignore-preflight-errors=Swap,Mem"
