@@ -29,6 +29,7 @@ async function initialize() {
     cover_image TEXT NOT NULL DEFAULT '', price NUMERIC(8,2) NOT NULL CHECK (price >= 0),
     total_quantity INTEGER NOT NULL CHECK (total_quantity >= 0), available_quantity INTEGER NOT NULL CHECK (available_quantity >= 0 AND available_quantity <= total_quantity)
   )`);
+  await pool.query('ALTER TABLE books ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true');
   await pool.query(`CREATE TABLE IF NOT EXISTS transactions (
     id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id), book_id BIGINT NOT NULL REFERENCES books(id),
     type TEXT NOT NULL CHECK (type IN ('buy','borrow')), status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT now(), returned_at TIMESTAMPTZ
@@ -75,29 +76,43 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   res.json({ user: publicUser(rows[0]) });
 }));
 app.post('/api/auth/logout', (_req, res) => res.json({ message: 'You are logged out.' }));
-app.get('/api/books', asyncRoute(async (_req, res) => { const { rows } = await pool.query('SELECT id,title,author,category,cover_image,price,total_quantity,available_quantity FROM books ORDER BY title'); res.json({ books: rows }); }));
+app.get('/api/books', asyncRoute(async (_req, res) => { const { rows } = await pool.query('SELECT id,title,author,category,cover_image,price,total_quantity,available_quantity FROM books WHERE active=true ORDER BY title'); res.json({ books: rows }); }));
 app.post('/api/books', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
   const { title, author, category, cover_image = '', price, total_quantity } = req.body || {};
   if (![title, author, category].every(v => typeof v === 'string' && v.trim()) || !Number.isFinite(Number(price)) || Number(price) < 0 || !Number.isInteger(Number(total_quantity)) || Number(total_quantity) < 0) return res.status(400).json({ error: 'Enter a title, author, category, non-negative price, and whole quantity.' });
   const { rows } = await pool.query('INSERT INTO books (title,author,category,cover_image,price,total_quantity,available_quantity) VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING *', [title.trim(),author.trim(),category.trim(),String(cover_image),Number(price),Number(total_quantity)]);
   res.status(201).json({ book: rows[0] });
 }));
+app.patch('/api/books/:id', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const { title, author, category, cover_image = '', price, total_quantity } = req.body || {};
+  if (![title, author, category].every(value => typeof value === 'string' && value.trim()) || !Number.isFinite(Number(price)) || Number(price) < 0 || !Number.isInteger(Number(total_quantity)) || Number(total_quantity) < 0) return res.status(400).json({ error: 'Enter a title, author, category, non-negative price, and whole quantity.' });
+  const { rows } = await pool.query(`UPDATE books SET title=$1, author=$2, category=$3, cover_image=$4, price=$5,
+    available_quantity=available_quantity+($6-total_quantity), total_quantity=$6
+    WHERE id=$7 AND active=true AND available_quantity+($6-total_quantity)>=0 RETURNING *`, [title.trim(),author.trim(),category.trim(),String(cover_image),Number(price),Number(total_quantity),req.params.id]);
+  if (!rows[0]) return res.status(409).json({ error: 'Book not found or quantity is below copies already borrowed or sold.' });
+  res.json({ book: rows[0] });
+}));
+app.delete('/api/books/:id', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const { rows } = await pool.query('UPDATE books SET active=false WHERE id=$1 AND active=true RETURNING id', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: 'Book not found.' });
+  res.json({ message: 'Book removed from the catalogue.' });
+}));
 app.patch('/api/books/:id/inventory', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
   const quantity = Number(req.body?.total_quantity);
   if (!Number.isInteger(quantity) || quantity < 0) return res.status(400).json({ error: 'Quantity must be a non-negative whole number.' });
-  const { rows } = await pool.query('UPDATE books SET available_quantity=available_quantity+(($1)-total_quantity), total_quantity=$1 WHERE id=$2 AND available_quantity+(($1)-total_quantity) >= 0 RETURNING *', [quantity,req.params.id]);
+  const { rows } = await pool.query('UPDATE books SET available_quantity=available_quantity+(($1)-total_quantity), total_quantity=$1 WHERE id=$2 AND active=true AND available_quantity+(($1)-total_quantity) >= 0 RETURNING *', [quantity,req.params.id]);
   if (!rows[0]) return res.status(409).json({ error: 'Book not found or the new stock is below the number already borrowed or sold.' });
   res.json({ book: rows[0] });
 }));
 app.post('/api/transactions/buy', requireAuth, asyncRoute(async (req, res) => {
   const bookId = Number(req.body?.bookId); if (!Number.isInteger(bookId)) return res.status(400).json({ error: 'Choose a valid book.' });
   const client = await pool.connect();
-  try { await client.query('BEGIN'); const { rows } = await client.query('UPDATE books SET total_quantity=total_quantity-1, available_quantity=available_quantity-1 WHERE id=$1 AND available_quantity>0 RETURNING id,title,price', [bookId]); if (!rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This book is currently unavailable.' }); } await client.query("INSERT INTO transactions(user_id,book_id,type,status) VALUES($1,$2,'buy','complete')", [req.user.id,bookId]); await client.query('COMMIT'); res.status(201).json({ message: `“${rows[0].title}” is yours. Purchase recorded.`, price: rows[0].price }); }
+  try { await client.query('BEGIN'); const { rows } = await client.query('UPDATE books SET total_quantity=total_quantity-1, available_quantity=available_quantity-1 WHERE id=$1 AND active=true AND available_quantity>0 RETURNING id,title,price', [bookId]); if (!rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This book is currently unavailable.' }); } await client.query("INSERT INTO transactions(user_id,book_id,type,status) VALUES($1,$2,'buy','complete')", [req.user.id,bookId]); await client.query('COMMIT'); res.status(201).json({ message: `“${rows[0].title}” is yours. Purchase recorded.`, price: rows[0].price }); }
   catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }));
 app.post('/api/transactions/borrow', requireAuth, asyncRoute(async (req, res) => {
   const bookId=Number(req.body?.bookId);if(!Number.isInteger(bookId))return res.status(400).json({error:'Choose a valid book.'});
-  const client=await pool.connect();try{await client.query('BEGIN');const {rows}=await client.query('UPDATE books SET available_quantity=available_quantity-1 WHERE id=$1 AND available_quantity>0 RETURNING title',[bookId]);if(!rows[0]){await client.query('ROLLBACK');return res.status(409).json({error:'This book is currently unavailable.'});}await client.query("INSERT INTO transactions(user_id,book_id,type,status) VALUES($1,$2,'borrow','active')",[req.user.id,bookId]);await client.query('COMMIT');res.status(201).json({message:`“${rows[0].title}” has been added to your borrowed books.`});}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  const client=await pool.connect();try{await client.query('BEGIN');const {rows}=await client.query('UPDATE books SET available_quantity=available_quantity-1 WHERE id=$1 AND active=true AND available_quantity>0 RETURNING title',[bookId]);if(!rows[0]){await client.query('ROLLBACK');return res.status(409).json({error:'This book is currently unavailable.'});}await client.query("INSERT INTO transactions(user_id,book_id,type,status) VALUES($1,$2,'borrow','active')",[req.user.id,bookId]);await client.query('COMMIT');res.status(201).json({message:`“${rows[0].title}” has been added to your borrowed books.`});}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }));
 app.get('/api/transactions/mine', requireAuth, asyncRoute(async (req,res)=>{const {rows}=await pool.query('SELECT t.id,t.type,t.status,t.created_at,t.returned_at,b.title FROM transactions t JOIN books b ON b.id=t.book_id WHERE t.user_id=$1 ORDER BY t.created_at DESC',[req.user.id]);res.json({transactions:rows});}));
 app.post('/api/transactions/:id/return',requireAuth,asyncRoute(async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');const {rows}=await client.query("UPDATE transactions SET status='returned',returned_at=now() WHERE id=$1 AND user_id=$2 AND type='borrow' AND status='active' RETURNING book_id",[req.params.id,req.user.id]);if(!rows[0]){await client.query('ROLLBACK');return res.status(404).json({error:'Active borrowed book not found.'});}await client.query('UPDATE books SET available_quantity=available_quantity+1 WHERE id=$1',[rows[0].book_id]);await client.query('COMMIT');res.json({message:'Book returned. Thanks for sharing!'});}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}));

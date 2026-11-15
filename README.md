@@ -1,6 +1,6 @@
 # Open Shelf Library
 
-A small library management website built as a three layer application: a responsive browser UI, a Node.js API, and PostgreSQL. Members can register, log in, browse and search the catalogue, record a purchase, borrow a book, and return it. Inventory changes and transaction history are stored in PostgreSQL.
+A small library management website built as a three layer application: a responsive browser UI, a Node.js API, and PostgreSQL. Members can register, log in, browse and search the catalogue, add books to a cart, record purchases, borrow books, and return them. Members have separate Borrowed, Bought, and Cart pages. The cart is saved in that browser; checkout records each completed purchase and stock change in PostgreSQL. Administrators can add, edit, and remove books from the inventory manager. Inventory changes and transaction history are stored in PostgreSQL.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ The first administrator account is registered with `admin@openshelf.local`. The 
 - `POST /api/books` with `title`, `author`, `category`, optional `cover_image`, `price`, and `total_quantity`.
 - `PATCH /api/books/:id/inventory` with `total_quantity`.
 
-Both endpoints require the administrator's Bearer token.
+Every inventory change requires the administrator's Bearer token. The inventory page offers create, edit, and remove controls. Catalogue removal is a soft delete so past purchases and loans remain in history.
 
 ## API routes
 
@@ -55,7 +55,8 @@ Both endpoints require the administrator's Bearer token.
 | `POST /api/transactions/borrow` | Borrow a book |
 | `GET /api/transactions/mine` | View the signed-in member's books |
 | `POST /api/transactions/:id/return` | Return an active borrowed book |
-| `POST /api/books`, `PATCH /api/books/:id/inventory` | Administrator inventory management |
+| `POST /api/books`, `PATCH /api/books/:id`, `DELETE /api/books/:id` | Add, edit, or remove a catalogue book |
+| `PATCH /api/books/:id/inventory` | Adjust the total stock count |
 
 Passwords are hashed with bcrypt. Purchase and borrowing operations use database transactions so competing requests cannot decrement the same last copy.
 

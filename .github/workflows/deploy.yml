@@ -25,8 +25,52 @@ env:
   TF_IN_AUTOMATION: true
 
 jobs:
+  validate:
+    name: Validate app and deployment files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Set up Python and Ansible
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible collections
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+          ansible-galaxy collection install community.general ansible.posix
+
+      - name: Validate Terraform without AWS credentials
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Check Ansible playbook syntax
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+        run: |
+          cd ansible
+          ansible-playbook --syntax-check -i localhost, site.yml
+          ansible-playbook --syntax-check -i localhost, deploy-library.yml
+
+      - name: Build application images
+        run: |
+          docker build --tag open-shelf-api:ci backend
+          docker build --tag open-shelf-web:ci frontend
+
   deploy:
     name: Build, provision, and deploy
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -121,16 +165,6 @@ jobs:
         env:
           TF_VAR_pem_file_path: ${{ runner.temp }}/depi-task.pem
         run: bash scripts/import-existing.sh
-
-      - name: Validate Terraform and Ansible playbooks
-        env:
-          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-        run: |
-          terraform fmt -check -recursive
-          terraform validate
-          cd ansible
-          ansible-playbook --syntax-check -i localhost, site.yml
-          ansible-playbook --syntax-check -i localhost, deploy-library.yml
 
       - name: Apply AWS infrastructure
         if: github.event_name == 'push' || inputs.action == 'apply'
